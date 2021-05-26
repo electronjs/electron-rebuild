@@ -7,6 +7,7 @@ import * as zlib from 'zlib';
 import { ELECTRON_GYP_DIR } from './constants';
 import { fetch } from './fetcher';
 import { downloadLinuxSysroot } from './sysroot-fetcher';
+import { downloadLibcxxHeaders, downloadLibcxxObjects } from './libcxx-fetcher';
 
 const d = debug('electron-rebuild');
 
@@ -50,6 +51,45 @@ export async function getClangEnvironmentVars(electronVersion: string, targetArc
   if (process.platform === 'linux') {
     const sysrootPath = await downloadLinuxSysroot(electronVersion, targetArch);
     clangArgs.push('--sysroot', sysrootPath);
+
+    const cc = `"${path.resolve(clangDir, 'clang')}" ${clangArgs.join(' ')}`
+    const cxx = `"${path.resolve(clangDir, 'clang++')}" ${clangArgs.join(' ')}`
+
+    // on Electron 13 or higher, build native modules with Electron's libc++ libraries
+    if (parseInt(electronVersion.split('.')[0]) >= 13) {
+      const libcxxObjects = await downloadLibcxxObjects(electronVersion, targetArch)
+      const libcxxHeadersDownloadDir = await downloadLibcxxHeaders(electronVersion, 'libc++')
+      const libcxxabiHeadersDownloadDir = await downloadLibcxxHeaders(electronVersion, 'libc++abi')
+
+      const libcxxHeaders = path.resolve(libcxxHeadersDownloadDir, 'include')
+      const libcxxabiHeaders = path.resolve(libcxxabiHeadersDownloadDir, 'include')
+
+      const cxxflags = [
+        '-nostdinc++',
+        '-D_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS',
+        `-isystem"${libcxxHeaders}"`,
+        `-isystem"${libcxxabiHeaders}"`,
+        '-fPIC'
+      ].join(' ');
+    
+      const ldflags = [
+        '-stdlib=libc++',
+        '-fuse-ld=lld',
+        `-L"${libcxxObjects}"`,
+        '-lc++abi'
+      ].join(' ');
+  
+      return {
+        env: {
+          CC: cc,
+          CXX: cxx,
+          CFLAGS: cxxflags,
+          CXXFLAGS: cxxflags,
+          LDFLAGS: ldflags,
+        },
+        args: gypArgs,
+      }
+    }
   }
 
   return {
